@@ -1,0 +1,202 @@
+---
+title: "Renewable Energy Visualisation"
+author: "Kornelia Dołęga-Żaczek"
+format: 
+  html:
+    df-print: paged
+editor: visual
+---
+------------------------------------------------------------------------
+
+This dataset contains information on renewable energy adoption and usage by households around the world, spanning the years 2020 to 2024. It provides insights into the growing trend of renewable energy sources like solar, wind, hydro, and geothermal being utilized in residential settings.
+
+```{r initialization, echo = FALSE, warning = FALSE, message = FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, 
+                      fig.width = 10, fig.height = 9)
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggiraph)
+library(sf)
+library(scales)
+library(leaflet)
+library(maps)
+library(Hmisc)
+library(viridis)
+```
+
+```{r dataset}
+
+energy_data = read.csv("data/Renewable_Energy_Usage.csv")
+energy_data
+
+```
+------------------------------------------------------------------------
+
+## Average Monthly Cost Savings from Renewable Energy
+
+### Per household
+
+Average monthly costs savings (in USD) compared to traditional energy sources. Renewables such as wind, biomass and solar make up a group with closer gaps than hydro and geothermal sources. The former yields an average savings above 250 USD a month each, whereas the latter falls below that threshold. 
+
+```{r cost_Savings}
+
+savings_analysis <- energy_data %>%
+  dplyr::group_by(Energy_Source) %>%
+  dplyr::summarize(Avg_Savings = mean(Cost_Savings_USD, na.rm = TRUE)) %>%
+  arrange(desc(Avg_Savings))
+
+savings_analysis %>%
+  mutate(Energy_Source = factor(Energy_Source, levels = unique(Energy_Source))) %>%
+  ggplot(aes(x = Energy_Source, y = Avg_Savings, fill = Energy_Source)) +
+  geom_bar(stat = "identity") +
+  scale_fill_viridis_d(option = "plasma") +
+  scale_y_continuous(
+    breaks = pretty_breaks(n = 10),
+    labels = dollar_format()
+  ) +
+  labs(
+    x = "Energy Source Type",
+    y = "Average Monthly Savings per Household",
+    fill = "Energy Source"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+    panel.grid.major.y = element_line(color = "grey90"),
+    plot.subtitle = element_text(margin = margin(b = 15)),
+    plot.caption = element_text(color = "gray50", hjust = 0)
+  ) +
+  coord_flip()
+
+```
+
+------------------------------------------------------------------------
+
+## Renewable Energy Trends (2020 - 2024) by year
+
+This plot visualizes energy usage (in kWh) trends grouped by their type and year. Among the renewables, as of 2020,
+wind-sourced energy was the most used one, yet its popularity was plummeting up to 2023 year, which ended its decreasing trend. Biomass energy experiences a change in its trend every year. Trend fluctuations are observed in biomass energy plot as well. From 2021 to 2024 only hydro energy seems to remain stable. Solar and biomass energy were almost equally used in 2023, reaching about 37 500 kWh usage.
+
+```{r energy_trends}
+
+adoption_summary <- energy_data %>%
+  group_by(Year, Energy_Source) %>%
+  summarise(Total_Usage = sum(Monthly_Usage_kWh))
+
+ggplot(adoption_summary, aes(x = Year, y = Total_Usage, color = Energy_Source)) +
+  geom_line() +
+  scale_color_viridis_d(option = "plasma") +
+  labs(x = "Year",
+       y = "Total Monthly Usage (kWh)",
+       color = "Energy Source") +
+  theme_minimal()
+```
+
+------------------------------------------------------------------------
+
+## Monthy energy usage by household size
+
+This boxplot visualizes energy usage statistics (in kWh) per households of sizes from 1 to 8 (a size is described as a number of residing people). It is observed as household size increases, the median monthly energy usage generally rises. This is expected, as larger households tend to consume more energy.
+
+```{r monthly_usage_house}
+
+ggplot(energy_data, aes(x = as.factor(Household_Size), y = Monthly_Usage_kWh, fill = as.factor(Household_Size))) +
+  geom_boxplot() +
+  scale_fill_viridis_d(option = "plasma") +
+  labs(x = "Household Size",
+       y = "Monthly Usage (kWh)",
+       fill = "Household Size") +
+  theme_minimal()
+```
+
+------------------------------------------------------------------------
+
+## Confidence Intervals for monthly energy usage by household size
+
+The blue points represent the mean energy usage for each household size group and the black error bars extend from the lower to upper bounds of the 95% confidence intervals, indicating the range of uncertainty around the mean. The plot shows that the biggest mean of monthly renewable energy usage is attained by a single-person households.
+
+```{r distributions}
+
+# Calculate mean and 95% confidence intervals for each Household Size
+energy_data_summary <- energy_data %>%
+  group_by(Household_Size) %>%
+  summarise(
+    Mean_Usage = mean(Monthly_Usage_kWh),
+    SD_Usage = sd(Monthly_Usage_kWh),
+    CI_Lower = Mean_Usage - 1.96 * SD_Usage / sqrt(n()),
+    CI_Upper = Mean_Usage + 1.96 * SD_Usage / sqrt(n()),
+    .groups = 'drop'
+  )
+
+# Scatter plot with confidence intervals for mean energy usage
+ggplot(energy_data_summary, aes(x = as.factor(Household_Size), y = Mean_Usage)) +
+  geom_point(color = "violet", size = 3) +  # Scatter plot points for mean
+  geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper), width = 0.2, color = "black") +
+  labs(
+    x = "Household Size",
+    y = "Mean Monthly Usage (kWh)"
+  ) +
+  theme_minimal()
+
+```
+
+------------------------------------------------------------------------
+
+## Renewable energy usage in global distribution in 2024
+
+This visualization presents global renewable energy usage (in kWh), showing the total consumption by country. Each circle on the map represents a country's total renewable energy consumption, with larger circles indicating higher usage levels. The map is created by aggregating monthly energy usage per country and then mapping it using the latitude and longitude of capital cities. 
+
+```{r energy_country}
+
+# Filter for 2024 data and summarize the usage by country
+country_usage <- energy_data %>%
+  filter(Year == 2024) %>%
+  group_by(Country) %>%
+  summarise(Total_Usage = sum(Monthly_Usage_kWh))
+
+# Get the coordinates of capitals
+country_coords <- maps::world.cities %>%
+  filter(capital == 1) %>%
+  select(Country = country.etc, lat, long = long) %>%
+  distinct(Country, .keep_all = TRUE)
+
+# Join the usage data with coordinates
+country_usage <- country_usage %>%
+  left_join(country_coords, by = "Country")
+
+# Plot the map
+leaflet(country_usage) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~long, lat = ~lat, # Use latitude and longitude data
+    radius = ~Total_Usage / 1000, # Scale radius by usage
+    popup = ~paste(Country, "Usage:", Total_Usage, "kWh"),
+    color = "magenta",
+    fillOpacity = 0.6
+  ) %>%
+  addLegend(
+    "bottomright",
+    title = "Renewable Energy Usage (kWh) in 2024",
+    colors = "violet",
+    labels = "Total Usage"
+  )
+
+```
+
+
+------------------------------------------------------------------------
+```{r}
+```
+
+
+```{r}
+```
+
+```{r sessioninfo}
+
+sessionInfo()
+
+```
